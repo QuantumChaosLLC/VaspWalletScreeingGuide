@@ -7,10 +7,10 @@ A comprehensive guide and toolkit for Virtual Asset Service Providers (VASPs) to
 
 ## Quick Links
 
-- [Main README](README.md) - Overview and quick start
-- [Sources Documentation](docs/sources.md) - Detailed source information
-- [Normalization Guide](docs/normalization.md) - Address canonicalization rules
-- [Governance Framework](docs/governance.md) - Controls and case workflow
+- [Main README](../README.md) - Overview and quick start
+- [Sources Documentation](../docs/sources.md) - Detailed source information
+- [Normalization Guide](../docs/normalization.md) - Address canonicalization rules
+- [Governance Framework](../docs/governance.md) - Controls and case workflow
 
 ## Repository Structure
 
