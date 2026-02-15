@@ -1,5 +1,8 @@
 # VASP Sanctions Screening
 
+## Credit
+This guide was developed in collaboration with the team at [ttexchange.io](https://ttexchange.io). TT Exchange is a crypto / USDT on ramp service built for Trinidad and Tobago. They are VASP regulated in T&T ensuring safe compliant access to crypto markets.
+
 A comprehensive guide and toolkit for Virtual Asset Service Providers (VASPs) to implement cryptocurrency wallet sanctions screening.
 
 ## Quick Links
