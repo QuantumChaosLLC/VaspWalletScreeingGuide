@@ -1,0 +1,68 @@
+name: Update Sanctions Lists
+
+on:
+  schedule:
+    # Run every 6 hours
+    - cron: '0 */6 * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  update-lists:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests
+      
+      - name: Download OFAC SDN
+        run: |
+          python connectors/ofac_sdn_downloader.py
+      
+      - name: Parse OFAC SDN
+        run: |
+          # Find the most recent downloaded file
+          LATEST_XML=$(ls -t data/ofac_sdn_advanced_*.xml | head -1)
+          python connectors/ofac_sdn_parser.py "$LATEST_XML"
+      
+      - name: Download UN Consolidated List
+        run: |
+          python connectors/un_consolidated_downloader.py
+      
+      - name: Download UK Sanctions List
+        run: |
+          python connectors/uk_sanctions_downloader.py
+      
+      - name: Commit updated lists
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add data/ output/
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update sanctions lists - $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      
+      - name: Push changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}
+      
+      - name: Create issue on failure
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Sanctions list update failed',
+              body: 'The automated sanctions list update workflow failed. Please investigate.',
+              labels: ['automation', 'urgent']
+            })

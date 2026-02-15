@@ -1,0 +1,369 @@
+TRANSACTION SCREENING PSEUDOCODE
+================================
+
+This pseudocode demonstrates a complete transaction screening workflow
+including exact-match checks, vendor API integration, and case management.
+
+
+INITIALIZATION
+--------------
+
+LOAD sanctioned_addresses FROM authoritative_lists
+LOAD cleared_addresses FROM false_positive_database
+CONFIGURE vendor_api WITH api_key, timeout, retry_policy
+CONFIGURE risk_thresholds FROM policy_config
+
+
+SCREENING FUNCTION
+------------------
+
+FUNCTION screen_transaction(tx):
+    INPUT:
+        tx = {
+            from_address: string,
+            to_address: string,
+            chain: string,
+            amount: decimal,
+            currency: string,
+            timestamp: datetime,
+            user_id: string
+        }
+    
+    OUTPUT:
+        decision = {
+            action: "ALLOW" | "BLOCK" | "HOLD" | "EDD",
+            risk_score: integer,
+            reasons: list[string],
+            case_id: optional[string],
+            evidence: dict
+        }
+    
+    STEPS:
+    
+    1. VALIDATE INPUT
+       IF NOT valid_address(tx.from_address, tx.chain):
+           RETURN {action: "BLOCK", reason: "invalid_from_address"}
+       IF NOT valid_address(tx.to_address, tx.chain):
+           RETURN {action: "BLOCK", reason: "invalid_to_address"}
+    
+    2. CHECK CLEARED LIST (OPTIMIZATION)
+       IF (tx.chain, tx.from_address) IN cleared_addresses:
+           from_cleared = TRUE
+       IF (tx.chain, tx.to_address) IN cleared_addresses:
+           to_cleared = TRUE
+    
+    3. EXACT MATCH CHECK (AUTHORITATIVE LISTS)
+       from_canonical = canonicalize(tx.chain, tx.from_address)
+       to_canonical = canonicalize(tx.chain, tx.to_address)
+       
+       IF (tx.chain, from_canonical) IN sanctioned_addresses:
+           RETURN {
+               action: "BLOCK",
+               risk_score: 100,
+               reasons: ["from_address_exact_match_ofac"],
+               case_id: create_case("sanctioned_from_address", tx),
+               evidence: {
+                   address: tx.from_address,
+                   chain: tx.chain,
+                   list_version: current_list_version,
+                   match_type: "exact"
+               }
+           }
+       
+       IF (tx.chain, to_canonical) IN sanctioned_addresses:
+           RETURN {
+               action: "BLOCK",
+               risk_score: 100,
+               reasons: ["to_address_exact_match_ofac"],
+               case_id: create_case("sanctioned_to_address", tx),
+               evidence: {
+                   address: tx.to_address,
+                   chain: tx.chain,
+                   list_version: current_list_version,
+                   match_type: "exact"
+               }
+           }
+    
+    4. VENDOR API CHECK (IF ENABLED)
+       IF vendor_api_enabled:
+           TRY:
+               from_risk = vendor_api.screen(tx.from_address, tx.chain, tx)
+               to_risk = vendor_api.screen(tx.to_address, tx.chain, tx)
+           CATCH api_error:
+               LOG error
+               IF fail_open_on_vendor_error:
+                   from_risk = {score: 0, sanctioned: FALSE}
+                   to_risk = {score: 0, sanctioned: FALSE}
+               ELSE:
+                   RETURN {action: "HOLD", reason: "vendor_api_unavailable"}
+           
+           max_risk_score = MAX(from_risk.score, to_risk.score)
+           
+           IF from_risk.sanctioned OR to_risk.sanctioned:
+               RETURN {
+                   action: "BLOCK",
+                   risk_score: 100,
+                   reasons: ["vendor_confirmed_sanctioned"],
+                   case_id: create_case("vendor_sanctioned", tx),
+                   evidence: {
+                       from_risk: from_risk,
+                       to_risk: to_risk,
+                       vendor: vendor_api.name
+                   }
+               }
+           
+           IF max_risk_score >= high_risk_threshold:
+               RETURN {
+                   action: "HOLD",
+                   risk_score: max_risk_score,
+                   reasons: ["high_risk_exposure"],
+                   case_id: create_case("high_risk", tx),
+                   evidence: {
+                       from_risk: from_risk,
+                       to_risk: to_risk,
+                       vendor: vendor_api.name
+                   }
+               }
+           
+           IF max_risk_score >= medium_risk_threshold:
+               RETURN {
+                   action: "EDD",
+                   risk_score: max_risk_score,
+                   reasons: ["medium_risk_exposure"],
+                   case_id: create_case("medium_risk", tx),
+                   evidence: {
+                       from_risk: from_risk,
+                       to_risk: to_risk,
+                       vendor: vendor_api.name
+                   }
+               }
+    
+    5. ALLOW WITH MONITORING
+       RETURN {
+           action: "ALLOW",
+           risk_score: 0,
+           reasons: ["no_sanctions_indicators"],
+           case_id: NULL,
+           evidence: {}
+       }
+
+
+CASE MANAGEMENT
+---------------
+
+FUNCTION create_case(case_type, tx):
+    case = {
+        case_id: generate_uuid(),
+        created_at: now(),
+        case_type: case_type,
+        status: "NEW",
+        priority: determine_priority(case_type),
+        subject_type: "transaction",
+        subject_id: tx.transaction_id,
+        
+        transaction_details: tx,
+        
+        screening_details: {
+            timestamp: now(),
+            list_versions: current_list_versions,
+            vendor_api_version: vendor_api.version
+        },
+        
+        assigned_to: auto_assign_analyst(case_type),
+        sla_deadline: now() + get_sla_duration(case_type)
+    }
+    
+    SAVE case TO database
+    NOTIFY assigned_analyst
+    
+    IF case.priority == "CRITICAL":
+        NOTIFY compliance_officer
+        NOTIFY senior_management
+    
+    RETURN case.case_id
+
+
+FUNCTION determine_priority(case_type):
+    IF case_type IN ["sanctioned_from_address", "sanctioned_to_address", "vendor_sanctioned"]:
+        RETURN "CRITICAL"
+    ELSE IF case_type == "high_risk":
+        RETURN "HIGH"
+    ELSE IF case_type == "medium_risk":
+        RETURN "MEDIUM"
+    ELSE:
+        RETURN "LOW"
+
+
+FUNCTION get_sla_duration(case_type):
+    priority = determine_priority(case_type)
+    
+    IF priority == "CRITICAL":
+        RETURN 4 hours
+    ELSE IF priority == "HIGH":
+        RETURN 24 hours
+    ELSE IF priority == "MEDIUM":
+        RETURN 3 days
+    ELSE:
+        RETURN 7 days
+
+
+CONTINUOUS MONITORING
+---------------------
+
+FUNCTION monitor_existing_relationships():
+    """
+    Periodic re-screening of existing customer addresses.
+    Run daily or weekly depending on risk appetite.
+    """
+    
+    FOR EACH customer IN active_customers:
+        FOR EACH address IN customer.addresses:
+            result = screen_transaction({
+                from_address: address,
+                to_address: "0x0000000000000000000000000000000000000000",  # dummy
+                chain: address.chain,
+                amount: 0,
+                currency: "N/A",
+                timestamp: now(),
+                user_id: customer.id
+            })
+            
+            IF result.action IN ["BLOCK", "HOLD"]:
+                # Retroactive hit
+                create_case("retroactive_sanctions_hit", {
+                    customer_id: customer.id,
+                    address: address,
+                    original_onboarding_date: customer.created_at,
+                    detection_date: now()
+                })
+                
+                freeze_customer_assets(customer.id)
+                notify_compliance_officer()
+                
+                # Prepare regulatory report
+                prepare_blocking_report(customer.id, address)
+
+
+AUDIT TRAIL
+-----------
+
+FUNCTION log_screening_decision(tx, decision):
+    audit_log = {
+        log_id: generate_uuid(),
+        timestamp: now(),
+        
+        transaction: tx,
+        decision: decision,
+        
+        list_versions: current_list_versions,
+        vendor_api_version: vendor_api.version,
+        
+        system_version: application_version,
+        
+        user_id: tx.user_id,
+        ip_address: tx.ip_address
+    }
+    
+    SAVE audit_log TO immutable_storage
+    
+    # Also log to SIEM for monitoring
+    SEND audit_log TO siem_system
+
+
+ERROR HANDLING
+--------------
+
+FUNCTION handle_screening_error(error, tx):
+    LOG error WITH severity="CRITICAL"
+    
+    NOTIFY engineering_team
+    NOTIFY compliance_team
+    
+    IF fail_safe_mode == "BLOCK":
+        # Conservative: block on error
+        RETURN {
+            action: "BLOCK",
+            reason: "screening_system_error",
+            case_id: create_incident("system_error", error)
+        }
+    ELSE IF fail_safe_mode == "HOLD":
+        # Moderate: hold for manual review
+        RETURN {
+            action: "HOLD",
+            reason: "screening_system_error",
+            case_id: create_incident("system_error", error)
+        }
+    ELSE:
+        # Risky: allow but flag for review
+        RETURN {
+            action: "ALLOW",
+            reason: "screening_system_error_fail_open",
+            case_id: create_incident("system_error", error)
+        }
+
+
+PERFORMANCE OPTIMIZATION
+------------------------
+
+FUNCTION optimize_screening():
+    """
+    Performance optimizations for high-volume screening.
+    """
+    
+    1. CACHE VENDOR API RESPONSES
+       - Cache duration: 1 hour
+       - Cache key: (chain, address, cache_hour)
+       - Invalidate on list updates
+    
+    2. USE BLOOM FILTER FOR PRE-FILTERING
+       - Fast negative check (O(1))
+       - Confirm positives with exact check
+       - Rebuild on list updates
+    
+    3. BATCH VENDOR API CALLS
+       - Collect multiple addresses
+       - Send in single API call
+       - Respect rate limits
+    
+    4. PARALLEL SCREENING
+       - Screen from_address and to_address in parallel
+       - Use async/await or threading
+    
+    5. DATABASE INDEXING
+       - Index on (chain, address)
+       - Index on case status and priority
+       - Index on timestamp for monitoring queries
+
+
+CONFIGURATION EXAMPLE
+---------------------
+
+risk_thresholds = {
+    high_risk_threshold: 80,
+    medium_risk_threshold: 50,
+    low_risk_threshold: 20
+}
+
+vendor_api_config = {
+    enabled: TRUE,
+    provider: "chainalysis",  # or "trm", "elliptic"
+    api_key: "***",
+    timeout: 5 seconds,
+    retry_attempts: 3,
+    fail_open_on_error: FALSE
+}
+
+list_update_config = {
+    ofac_update_frequency: "6 hours",
+    un_update_frequency: "24 hours",
+    uk_update_frequency: "24 hours",
+    integrity_check: TRUE,
+    auto_promote: FALSE  # require manual approval
+}
+
+case_management_config = {
+    auto_assign: TRUE,
+    sla_enforcement: TRUE,
+    escalation_enabled: TRUE,
+    escalation_threshold: "50% of SLA elapsed"
+}
